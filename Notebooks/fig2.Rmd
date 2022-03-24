@@ -1,0 +1,196 @@
+Load libraries
+```{r}
+library(RColorBrewer)
+library(cowplot)
+#library(ggridges)
+library(tidyverse)
+source("../General/general_functions.R")
+```
+
+Load data
+```{r}
+#Generate palette
+cor.pal <- colorRampPalette(c("goldenrod4", "goldenrod2", "white", "gray75", "gray25"))(12)
+
+#Load ANI distributions
+ani.prev <- readRDS("../Data/ani_prevalent.RDS")
+
+#Load correlation results
+cor.estimate <- readRDS("../Data/ani_correlations.RDS")
+
+#Load vOTU microdiversity metrics
+merged <- readRDS("../Data/merged_instrain_genome.RDS")
+
+#Load occupancy data frame
+occupancy.df <- readRDS("../Data/votu_occupancy.RDS") %>% 
+  mutate(Prevalent = ifelse(Occupancy >= 43 * 0.90, "≥ 90% samples", "< 90% samples"))
+```
+
+
+Panel A and B
+```{r}
+#A
+micro.p <- merged %>% 
+  mutate(pSNPs = divergent_site_count/length * 100) %>% 
+  inner_join(occupancy.df, by = "OTU_ID") %>% 
+  ggplot(aes(pSNPs, fill = Prevalent)) +
+  geom_density(alpha = 0.7, color = "white") +
+  ylab("Density") +
+  xlab("Percentage of variable sites") +
+  scale_fill_manual(name = "Occupancy", values = c("gray75", "gray15")) +
+  theme_bw() +
+  theme(text = element_text(size = 10))
+
+#B
+ab.p <- merged %>% 
+  mutate(pSNPs = divergent_site_count/length) %>% 
+  inner_join(occupancy.df, by = "OTU_ID") %>% 
+  ggplot(aes(MeanRelAb, fill = Prevalent, color = Prevalent)) +
+  geom_density(alpha = 0.7, color = "white") +
+  ylab("Density") +
+  xlab("Mean vOTU relative abundance") +
+  scale_x_log10(labels = scales::trans_format("log10", scales::math_format(10^.x))) +
+  scale_fill_manual(name = "Occupancy", values = c("gray75", "gray15")) +
+  theme_bw() +
+  theme(text = element_text(size = 10))
+
+#Top panel
+top <- plot_grid(micro.p + theme(legend.position = "none"),
+          ab.p + theme(legend.position = "none"),
+          get_legend(ab.p),
+          nrow = 1,
+          rel_widths = c(2,2,1))
+
+top
+```
+
+Calculate order of vOTUs and pick the top 5 most significant ones
+```{r}
+#Calculate the median ANI for each vOTU and used it rank vOTUs
+ani.ord <- ani.prev %>%
+  group_by(OTU_ID) %>%
+  summarise(Median = median(conANI),
+         Max = max(conANI),
+         Min = min(conANI)) %>%
+  ungroup() %>%
+  arrange(Median, Min) %>%
+  mutate(Order = 1:n())
+
+#Identify the 5 vOTUs with the lowest P-value 
+sig.otus <- cor.estimate %>% 
+  inner_join(select(ani.ord, OTU_ID, Order)) %>% 
+  filter(p.adj < 0.05) %>% 
+  mutate(Rank = rank(p.adj)) %>% 
+  filter(Rank < 6) %>% 
+  mutate(Rank2 = rank(Order)) %>% 
+  mutate(altID = paste("vOTU", LETTERS[Rank2])) 
+```
+
+Panel C boxplots
+```{r}
+box.p <- ani.prev %>%
+  inner_join(ani.ord, by = "OTU_ID") %>%
+  ggplot(aes(reorder(OTU_ID, -Order), conANI * 100)) +
+  geom_boxplot(fill = "white", color = "gray25", outlier.colour = "gray25", outlier.size = 0.25) +
+  coord_flip() +
+  ylab("Consensus ANI (%)") +
+  xlab("Prevalent vOTU") +
+  theme_bw() +
+  theme(text = element_text(size = 10),
+        axis.text.y = element_blank(),
+        axis.ticks.y = element_blank())
+
+box.p
+```
+Panel C heatmap
+```{r}
+#Find the highest FC absolute value for plotting
+estimate.max <- cor.estimate %>% filter(!is.na(estimate)) %>% .$estimate %>% abs() %>% max() %>% round(digits = 1)
+
+#Add the rank order info to the correlation data frame
+cor.estimate.ord <- cor.estimate %>% 
+  inner_join(select(ani.ord, OTU_ID, Order)) %>% 
+  left_join(select(sig.otus, altID, OTU_ID), by = "OTU_ID") 
+
+#Plot
+r.p <- cor.estimate.ord %>% 
+  ggplot() +
+  geom_tile(aes(1, reorder(OTU_ID, -Order), fill = estimate), size = 0.5) +
+  geom_tile(data = filter(cor.estimate.ord, p.adj < 0.05), aes(1, reorder(OTU_ID, -Order), fill = estimate), color = "gray25", size = 0.5) +
+  geom_tile(data = filter(cor.estimate.ord, is.na(estimate)), aes(1, reorder(OTU_ID, -Order)), fill = "black", size = 0.5) +
+  geom_text(data = filter(cor.estimate.ord, OTU_ID %in% sig.otus$OTU_ID), aes(1, OTU_ID), label = "*", color = "gray25", size = 3) +
+  scale_fill_gradientn(name = "r",
+                       colors = cor.pal,
+                       limits = c(-estimate.max, estimate.max),
+                       breaks = c(-estimate.max, -.35, 0, .35, estimate.max),
+                       guide = guide_colorbar(title.position = "top",
+                                              title.hjust = 0.5)) +
+  scale_color_manual(values = c("white", "gray25")) +
+  theme_minimal() +
+  theme(text = element_text(size = 10),
+        axis.text.x = element_text(angle = 90, hjust = 1),
+        axis.text.y = element_blank(),
+        axis.title = element_blank(),
+        panel.grid = element_blank(),
+        legend.position = "bottom") 
+
+r.p
+```
+
+Panel D
+```{r}
+#Subset data to include the top 5 vOTUs
+cor.sig <- ani.prev %>% 
+  filter(OTU_ID %in% sig.otus$OTU_ID) %>% 
+  inner_join(ani.ord, by = "OTU_ID") %>% 
+  inner_join(select(sig.otus, OTU_ID, altID))
+
+#Plot
+sig.votu.p <- cor.sig %>% 
+  ggplot(aes(SpatialDistance, conANI *100)) +
+  geom_point(shape = 16, size = 0.5, stroke = 1, alpha = 0.5, color = "gray25") +
+  geom_smooth(method = "lm", se = F, color = "black") +
+  facet_grid(altID ~ ., scales = "free", space = "free_x", switch = "y") +
+  xlab("Distance between plots (m)") +
+  ylab("Consensus ANI (%)") +
+  scale_x_continuous(breaks = seq(0, 18, by = 3)) +
+  scale_y_continuous(position = "right") +
+  theme_bw() +
+  theme(text = element_text(size = 10),
+        legend.position = "none",
+        #strip.text.y = element_blank(),
+        strip.background =element_rect(fill="gray25"),
+        strip.text = element_text(colour = "white"))
+
+sig.votu.p
+```
+
+Put it all together
+550:940
+```{r}
+top <- plot_grid(micro.p + theme(legend.position = "none"),
+          ab.p + theme(legend.position = "none"),
+          get_legend(ab.p),
+          nrow = 1,
+          rel_widths = c(2,2,1),
+          align = "hv", axis = "lrtb",
+          labels = c("a", "b", NA),
+          label_size = 12)
+
+bottom <- plot_grid(box.p, 
+                    r.p + theme(legend.position = "none"), 
+                    sig.votu.p, 
+                    nrow = 1, 
+                    align = "h", axis = "bt", 
+                    rel_widths = c(10,1,11),
+                    labels = c("c", NA,"d"),
+                    label_size = 12)
+
+plot_grid(top, bottom, get_legend(r.p), nrow = 3, rel_heights = c(2,8,1))
+```
+
+Determine how many vOTUs were significant across all prevalent vOTUs and the most diverse ones 
+```{r}
+cor.estimate %>% group_by(p.adj < 0.05) %>% count()
+ani.ord %>% filter(Median < 0.995) %>% left_join(cor.estimate, by = "OTU_ID") %>% group_by(p.adj < 0.05) %>% count()
+```

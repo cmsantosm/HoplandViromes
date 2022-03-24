@@ -1,0 +1,243 @@
+Load libraries
+```{r}
+library(cowplot)
+library(tidyverse)
+```
+
+Load data
+```{r}
+#Generate palette
+ntwk.palette = c(rcartocolor::carto_pal(7, "Tropic")[2], "gray85", rcartocolor::carto_pal(7, "Tropic")[7])
+
+#Load indicator species results
+res.trt <- readRDS("../Data/votu_indicator.RDS") %>% 
+  rename("Genome" = "OTU_ID")
+
+#Filter significant vOTUs
+sig.otus <- res.trt %>% 
+  filter(p.value < 0.05) %>% 
+  mutate(Trait = Response)
+
+#Load safe network layout
+nodes <- readRDS("../Data/safe_ind_whole_nodes.RDS")
+edges <- readRDS("../Data/safe_ind_whole_edges.RDS")
+
+#Load neighborhood enrichment results
+enrichment <- readRDS("../Data/safe_ind_enrichment.RDS")
+
+#Load neigbhorhood membership data frame
+neighborhoods.tidy <- readRDS("../Data/safe_ind_neighborhoods.RDS")
+```
+
+Generate palette values for the enrichment plots
+```{r}
+enrichment.pal.trt <- ntwk.palette[c(2,7)]
+names(enrichment.pal.trt) <- unique(sig.otus$Trait)
+
+enr.color.list.trt <- list()
+
+for(enr in sort(unique(sig.otus$Trait))){
+  color = enrichment.pal.trt[[enr]]
+  enr.color.list.trt[[enr]] <- data.frame(EnrichmentBin = 1:5,
+                                      Color = colorRampPalette(c("white", color))(6)[2:6])
+}
+
+enr.color.trt <- plyr::ldply(enr.color.list.trt, function(x) x) %>% 
+  dplyr::rename("Trait" = ".id") %>% 
+  arrange(Trait, EnrichmentBin)
+```
+
+Plot the distribution of indicator species across the network and the corresponding neighborhood enrichments
+```{r}
+#Dataframe to plot outside circle 
+circle <- data.frame(x0 = 0, y0 = 0, r = 0.5)
+
+#Annotate network data frame with indicator species results
+dao.tmp.trt <- nodes %>% 
+  left_join(sig.otus, by = "Genome") %>% 
+  mutate(Trait = ifelse(is.na(Trait), "NS", as.character(Trait))) %>% 
+  mutate(Trait = fct_recode(Trait,
+                            "Enriched in T2-50" = "Dry",
+                            "Depleted in T2-50" = "Wet",
+                            "P ≥ 0.5" = "NS"))
+
+#Plot distribution of indicator species across the network
+dao.trt.p <- dao.tmp.trt %>% 
+  ggplot() +
+  geom_line(data = edges, aes(x, y, group = Pair), alpha = 0.1, size = 0.1) +
+  geom_point(data = filter(dao.tmp.trt, Trait == "P ≥ 0.5"), aes(x, y, color = Trait), alpha = 0.8, size = 0.5, shape = 16) +
+  geom_point(data = filter(dao.tmp.trt, Trait != "P ≥ 0.5"), aes(x, y, color = Trait), alpha = 0.8, size = 1) +
+  ggforce::geom_circle(data = circle, aes(x0 = 0.5, y0 = 0.5, r = 0.55), color = "gray25", linetype = 2) +
+  scale_color_manual(values = ntwk.palette[c(3,1,2)], limits = c("Enriched in T2-50","Depleted in T2-50", "P ≥ 0.5")) +
+  guides(color = guide_legend(title.position = "left", title.hjust = 1, nrow = 3)) +
+  theme(text = element_text(size = 12),
+        axis.text = element_blank(),
+        axis.title = element_blank(),
+        axis.ticks = element_blank(),
+        axis.line = element_blank(),
+        panel.grid = element_blank(),
+        panel.background = element_rect(fill = "white"),
+        legend.position = "bottom")
+
+dao.trt.p
+
+#Annotate network data frame with neighborhood enrichment results
+enr.tmp.trt <- nodes %>%
+  inner_join(enrichment, by = c("Genome" = "Neighborhood")) %>%
+  arrange(EnrichmentScore) %>%
+  filter(padj < 0.05)
+
+#Plot neighbhorhood enrichment scores across the network
+enr.trt.p <- enr.tmp.trt %>% 
+  arrange(EnrichmentScore) %>% 
+  mutate(Trait = fct_recode(Trait,
+                            "Enriched in T2-50" = "Dry",
+                            "Depleted in T2-50" = "Wet")) %>% 
+  mutate(Trait = fct_relevel(Trait,
+                             "Enriched in April 50%")) %>% 
+  arrange(logpval) %>% 
+  ggplot() +
+  geom_point(aes(x,y, color = logpval), alpha = 1, size = 1) +
+  scale_color_distiller(name = "Trait overrepresentation\n-log10(P-val)",
+                        palette = "Blues", direction = 1) +
+  guides(color = guide_colorbar(title.position = "left", title.hjust = 1)) +
+  ggforce::geom_circle(data = circle, aes(x0 = 0.5, y0 = 0.5, r = 0.55), color = "gray25", linetype = 2) +
+  facet_grid(. ~ Trait) +
+  theme(text = element_text(size = 12),
+        axis.text = element_blank(),
+        axis.title = element_blank(),
+        axis.ticks = element_blank(),
+        axis.line = element_blank(),
+        panel.grid = element_blank(),
+        panel.background = element_rect(fill = "white"),
+        legend.position = "bottom",
+        strip.background =element_rect(fill="gray25"),
+        strip.text = element_text(colour = "white")) 
+
+enr.trt.p
+
+#Generate top panel 
+top <- cowplot::plot_grid(dao.trt.p, enr.trt.p, rel_widths = c(1,2), align = "h", axis = "bt", labels = c("a", "b"), label_size = 15)
+top
+```
+
+Generate dataframes summarizing indicator species results across relevant neighborhoods
+```{r}
+#Get all 
+sig.nbhd <- enrichment %>% 
+  filter(padj < 0.05) %>% 
+  filter(Trait == "Dry")
+
+#Generate a dataframe summarizing the number of neighborhood members identified as indicator species
+response.summary <- neighborhoods.tidy %>% 
+  filter(Neighborhood %in% sig.nbhd$Neighborhood) %>% 
+  inner_join(res.trt, by = c("Members" = "Genome")) %>% 
+  group_by(Neighborhood, Response) %>% 
+  summarise(Total = n()) %>% 
+  group_by(Neighborhood) %>% 
+  mutate(Fraction = Total/sum(Total)) %>% 
+  ungroup() %>% 
+  mutate(Response = fct_relevel(Response,
+                                c("Wet", "NS", "Dry"))) %>% 
+  inner_join(select(enr.tmp.trt, Genome, logpval), by = c("Neighborhood" = "Genome")) %>% 
+  mutate(Set = "Neighborhood")
+
+#Rank neighborhoods by the fraction of members that were enriched in T2-50 samples
+response.rank <- response.summary %>% 
+  filter(Response == "Dry") %>% 
+  mutate(Rank = rank(Fraction, ties.method = "first")) %>% 
+  select(Neighborhood, Rank)
+
+#Generate a dataframe summarizing the number of vOTU identified as indicator species across the whole network
+response.whole <- nodes %>% 
+  inner_join(res.trt, by = "Genome") %>% 
+  group_by(Response) %>% 
+  summarise(Total = n()) %>% 
+  ungroup() %>% 
+  mutate(Fraction = Total/sum(Total)) %>% 
+  ungroup() %>% 
+  mutate(Response = fct_relevel(Response,
+                                c("Wet", "NS", "Dry"))) %>% 
+  mutate(Neighborhood = "Whole",
+         logpval = NA) %>% 
+  select(Neighborhood, Response, Total, Fraction, logpval) %>% 
+  mutate(Set = "Total network")
+```
+
+
+Bind response data frames 
+```{r}
+rbind(response.summary, response.whole) %>%
+  mutate(Set = fct_relevel(Set, "Total network")) %>% 
+  group_by(Set,Neighborhood) %>% 
+  summarise(Total2 = sum(Total)) %>% 
+  mutate(Total2 = ifelse(Set == "Total network", 0, Total2)) %>% 
+  arrange(Total2)
+```
+
+Plot
+```{r}
+#Barplot displaying the size of each significant neighborhood
+size.p <- rbind(response.summary, response.whole) %>%
+  mutate(Set = fct_relevel(Set, "Total network")) %>% 
+  group_by(Set,Neighborhood) %>% 
+  summarise(Total2 = sum(Total)) %>% 
+  mutate(Total2 = ifelse(Set == "Total network", 0, Total2)) %>% 
+  left_join(response.rank, by = "Neighborhood") %>% 
+  ggplot(aes(reorder(Neighborhood, -Rank), Total2)) +
+  geom_bar(stat = "identity") +
+  xlab("Network\nneighborhood") +
+  ylab("Neighborhood size\n(# of nodes)") +
+  facet_grid(. ~ Set, scales = "free", space = "free") +
+  theme_minimal() +
+  theme(text = element_text(size = 12),
+        axis.text.x = element_blank(),
+        axis.title.x = element_blank(),
+        strip.text = element_blank()) 
+
+#Barplot displaying the composition of each neighborhood
+response.p <- rbind(response.summary, response.whole) %>%
+  mutate(Set = fct_relevel(Set, "Total network")) %>% 
+  left_join(response.rank, by = "Neighborhood") %>% 
+  ggplot() +
+  geom_bar(aes(reorder(Neighborhood, -Rank), Fraction, fill = Response), stat = "identity", position = "fill") +
+  geom_point(aes(reorder(Neighborhood, -Rank), -0.05, color = logpval)) +
+   scale_color_distiller(palette = "Blues", direction = 1) +
+  scale_fill_manual(name = "Enriched in April 50%\nDepleted in April 50%\nOther",
+                    values = ntwk.palette,
+                    limits = c("Wet", "NS", "Dry"),
+                    labels = c("Depleted", "P ≥ 0.05", "Enriched")) +
+  guides(color = FALSE) +
+  guides(fill = guide_legend(title.position = "left", title.hjust = 1, nrow = 3)) +
+  xlab("Network\nneighborhood") +
+  ylab("Fraction of nodes") +
+  facet_grid(. ~ Set, scales = "free", space = "free") +
+  theme_minimal() +
+  theme(text = element_text(size = 12),
+        axis.text.x = element_blank(), strip.text = element_blank(),
+        legend.position = "none") 
+
+response.p
+
+bottom <- plot_grid(size.p, response.p, align = "v", axis = "lr", nrow = 2, rel_heights = c(6,11))
+```
+Put it all togehter
+740:830
+```{r}
+plot_grid(top, bottom, nrow = 2, labels = c(NA, "c"), label_size = 15, rel_heights = c(4,5))
+```
+
+Get some stats for the paper
+```{r}
+neighborhoods.tidy %>% 
+  group_by(Neighborhood) %>% 
+  count() %>%
+  filter(n > 10) %>% 
+  .$n %>% 
+  median()
+
+response.summary %>% 
+  filter(Response == "Dry") %>% 
+  arrange(Fraction)
+```
+

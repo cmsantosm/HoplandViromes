@@ -1,0 +1,52 @@
+Load libraries
+```{r}
+library(indicspecies)
+library(tidyverse)
+source("../General/general_functions.R")
+```
+
+Load data
+```{r}
+#Load mapping file
+map <- readRDS("../Data/map.RDS") %>% 
+  rename("SampleID" = "ViromeSampleID") %>% 
+  filter(SampleID != "V33") %>% 
+  mutate(Group = ifelse(WaterTreatment == "Half" & Timepoint == "T2", "Dry", "Wet"))
+
+#Load OTU table and filter singletons 
+otu <- readRDS("../Data/votu_tmean75.RDS")
+otu <- otu[,match(map$SampleID, colnames(otu))]
+otu <- otu[rowSums(otu>0)>1,]
+
+#Normalize OTU table
+otu.norm <- otu %>% rel_ab() %>% log_norm()
+```
+
+Run indicator species analysis
+```{r}
+#Define abundance table
+abund <-  t(otu.norm)
+#Define Group vector
+group <-  map$Group
+
+#Run analysis
+inv <-  multipatt(abund, group, func = "r.g", control = how(nperm=9999))
+
+#Retrieve relevant results and reformat
+indic.res <- inv$sign %>% 
+  mutate(Enrichment = ifelse(index == 1, "Dry", "Wet")) %>% 
+  mutate(Response = case_when(p.value >= 0.05 ~ "NS",
+                              p.value < 0.05 & index == 1 ~"Dry", 
+                              p.value < 0.05 & index == 2 ~"Wet")) %>% 
+  mutate(OTU_ID = row.names(.)) %>% 
+  select(OTU_ID, stat, p.value, Enrichment, Response) %>% 
+  as.tibble()
+
+#Check number of indicator species identified
+indic.res %>% 
+  group_by(Response) %>% 
+  count()
+
+#Save results
+saveRDS(indic.res, "../Data/votu_indicator.RDS")
+```

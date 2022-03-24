@@ -1,0 +1,83 @@
+Load libraries
+```{r}
+library(tidyverse)
+source("../General/general_functions.R")
+```
+
+Load mapping file and OTU table and reformat
+```{r}
+map <- readRDS("../Data/map.RDS") %>% 
+  rename("SampleID" = "AmpliconSampleID")
+
+otu <- readRDS("../Data/bac_otu97.RDS")
+otu <- otu[,match(map$SampleID, colnames(otu))]
+
+#Filter singletons
+otu <- otu[rowSums(otu>0)>1,]
+
+#Normalize
+otu.norm <- otu %>% rel_ab() %>% log_norm()
+```
+
+Perform principal coordinates analysis
+```{r}
+#Calculate Bray-Curtis dissimilarities
+bc.dist <- beta_div_dist(otu.norm)
+
+#Perform PCoA
+bc.pcoa.axes <- pcoa_axes(bc.dist, map)
+bc.pcoa.eigval <- pcoa_eigval(bc.dist, map)
+
+#Save results
+saveRDS(bc.pcoa.axes, "../Data/bac_otu97_pcoa_axes.RDS")
+saveRDS(bc.pcoa.eigval, "../Data/bac_otu97_pcoa_eigval.RDS")
+```
+
+Generate a long data frame with the pairwise Bray-Curtis dissimilarities
+```{r}
+#Remove redundant values
+bc.dist[upper.tri(bc.dist)] <- NA 
+
+#Generate data frame
+bc.dist.tidy <- bc.dist %>% 
+  as.data.frame() %>% 
+  mutate(SampleID.x = rownames(.)) %>% 
+  gather(key = "SampleID.y", value = "Distance", -SampleID.x) %>% 
+  inner_join(map, by = c("SampleID.x" = "SampleID")) %>% 
+  inner_join(map, by = c("SampleID.y" = "SampleID")) %>% 
+  filter(!is.na(Distance))
+
+#Save results
+saveRDS(bc.dist.tidy, "../Data/bac_otu97_braycurtis_tidy.RDS")
+```
+
+Generate a long data frame with the pairwise overlaps in OTU detection
+```{r}
+#Benerate presence/absence OTU table
+bi.otu <- otu > 0
+
+#Find the number of OTUs overlapping between pairs of samples. %*% indicates that this should be treated as a matrix multiplication in linear algebra
+overlap <- t(bi.otu) %*% (bi.otu)
+
+#The universe of vOTUs shared by a pair of samples is the  sum of the overlap and the number of vOTus unique to each of the samples.  
+total <- (colSums(bi.otu) - overlap) + t(colSums(bi.otu) - overlap) + overlap
+
+#Calculate the percent of vOTUs shared
+pct.shared <- overlap / total
+
+#Remove redundant values
+pct.shared[upper.tri(pct.shared)] <- NA
+
+#Generate data frame
+pct.tidy <- pct.shared %>% 
+  as.data.frame() %>% 
+  mutate(SampleID.x = row.names(.)) %>% 
+  gather(key = "SampleID.y", value = "PercentShared", -SampleID.x) %>% 
+  filter(!is.na(PercentShared)) %>% 
+  inner_join(map, by = c("SampleID.x" = "SampleID")) %>% 
+  inner_join(map, by = c("SampleID.y" = "SampleID")) %>% 
+  mutate(Difference = abs(PlotNum.x - PlotNum.y)) 
+
+#Save results
+saveRDS(pct.tidy, "../Data/bac_otu97_overlap.RDS")
+```

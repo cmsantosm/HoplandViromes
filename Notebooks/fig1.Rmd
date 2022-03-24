@@ -1,0 +1,141 @@
+Load libraries
+```{r}
+library(RColorBrewer)
+library(cowplot)
+library(broom)
+library(tidyverse)
+```
+
+Load data and reformat
+```{r}
+#Generate palettes
+gradient.pal <- c(brewer.pal(9, "Blues"), brewer.pal(6, "Reds"))
+trt.pal <- brewer.pal(9, "Greys")[c(9, 4)] 
+
+#Load vOTU PCoA scores and eigenvalues
+v.pcoa.axes <- readRDS("../Data/votu_pcoa_axes.RDS") %>% mutate(Set = "vOTUs")
+v.pcoa.eigval <- readRDS("../Data/votu_pcoa_eigval.RDS") %>% mutate(Set = "vOTUs")
+
+#Load vOTU BC dissimilarities
+v.bc.dist.tidy <- readRDS("../Data/votu_braycurtis_tidy.RDS") %>% mutate(Set = "vOTUs")
+#Filter BC so that only pairwise comparisons within time points are considered. Transform dissimilarities to similarities.
+v.dist.filt <- v.bc.dist.tidy %>% 
+  filter(Distance > 0) %>% 
+  filter(Timepoint.x == Timepoint.y) %>% 
+  mutate(SpatialDistance = sqrt((Position.x.x - Position.x.y)^2 + (Position.y.x - Position.y.y)^2)) %>% 
+  mutate(Similarity = 1 - Distance)
+
+#Load amplicon PCoA scores and eigenvalues
+b.pcoa.axes <- readRDS("../Data/bac_otu97_pcoa_axes.RDS") %>% mutate(Set = "16S rRNA gene OTUs")
+b.pcoa.eigval <- readRDS("../Data/bac_otu97_pcoa_eigval.RDS") %>% mutate(Set = "16S rRNA gene OTUs")
+
+#Load amplicon BC dissimilarities
+b.bc.dist.tidy <- readRDS("../Data/bac_otu97_braycurtis_tidy.RDS") %>% mutate(Set = "16S rRNA gene OTUs")
+#Filter BC so that only pairwise comparisons within time points are considered. Transform dissimilarities to similarities.
+b.dist.filt <- b.bc.dist.tidy %>% 
+  filter(Distance > 0) %>% 
+  filter(Timepoint.x == Timepoint.y) %>% 
+  mutate(SpatialDistance = sqrt((Position.x.x - Position.x.y)^2 + (Position.y.x - Position.y.y)^2)) %>% 
+  mutate(Similarity = 1 - Distance)
+
+#Calculate the range of BC similarities for plotting
+max.sim <- max(v.dist.filt$Similarity, b.dist.filt$Similarity)
+min.sim <- min(v.dist.filt$Similarity, b.dist.filt$Similarity)
+```
+
+Panel B
+```{r}
+b <- v.pcoa.axes %>% 
+  ggplot(aes(Axis.1, Axis.2)) +
+  geom_point(aes(fill = Plot, shape = Timepoint), size = 2, stroke = 0.5, alpha = 1) +
+  xlab(paste("PCo1 (", v.pcoa.eigval$Eigval[1], "%)", sep = "")) +
+  ylab(paste("PCo2 (", v.pcoa.eigval$Eigval[2], "%)", sep = "")) +
+  scale_fill_manual(name = "Plot", values = gradient.pal) +
+  scale_shape_manual(values = c(21,24)) +
+  facet_wrap(~ Set) +
+  theme_bw() +
+  theme(text = element_text(size = 11),
+        legend.position = "none",
+        strip.background =element_rect(fill="gray25"),
+        strip.text = element_text(colour = "white"))
+
+b
+```
+Panel C
+```{r}
+#Perform Pearson correlation test and regression to get stats
+v.cor <- cor.test(v.dist.filt$SpatialDistance, v.dist.filt$Similarity, method = "pearson", alternative = "two.sided") %>% tidy()
+v.lm <- lm(Similarity ~ SpatialDistance, data = v.dist.filt) %>% tidy() %>% filter(term == "SpatialDistance")
+v.dist.stats <- data.frame(label = paste("r = ", signif(v.cor$estimate,3), 
+                                       "\nslope = ", signif(v.lm$estimate, 3),
+                                       "\nP = ", signif(v.cor$p.value, 3)))
+
+c <- v.dist.filt %>% 
+  ggplot(aes(SpatialDistance, Similarity)) +
+  geom_point(shape = 16, size = 1, alpha = 0.5, color = "gray25") +
+  geom_text(data = v.dist.stats, aes(x = 10, y = .60, label = label), hjust = 0, size = 3) + 
+  geom_smooth(method = "lm", color = "black", se = F) +
+  scale_x_continuous(breaks = seq(0, 18, by = 3)) +
+  xlab("Distance between plots (m)") +
+  ylab("Bray-Curtis similarity") +
+  #ylim(min.sim, max.sim) +
+  facet_wrap(~ Set ) +
+  theme_bw() +
+  theme(text = element_text(size = 11),
+        legend.position = "top",
+        strip.background =element_rect(fill="gray25"),
+        strip.text = element_text(colour = "white"))
+
+c
+```
+
+Panel D
+```{r}
+d <- b.pcoa.axes %>% 
+  ggplot(aes(Axis.4, Axis.5)) +
+  geom_point(aes(fill = Plot, shape = Timepoint), size = 2, stroke = 0.5, alpha = 1) +
+  xlab(paste("PCo4 (", b.pcoa.eigval$Eigval[4], "%)", sep = "")) +
+  ylab(paste("PCo5 (", b.pcoa.eigval$Eigval[5], "%)", sep = "")) +
+  scale_fill_manual(name = "Plot", values = gradient.pal) +
+  scale_shape_manual(values = c(21,24)) +
+  facet_wrap(~ Set) +
+  theme_bw() +
+  theme(text = element_text(size = 11),
+        legend.position = "none",
+        strip.background =element_rect(fill="gray25"),
+        strip.text = element_text(colour = "white"))
+
+d
+```
+
+Panel E
+```{r}
+#Perform Pearson correlation test and regression to get stats
+b.cor <- cor.test(b.dist.filt$SpatialDistance, b.dist.filt$Similarity, method = "pearson", alternative = "two.sided") %>% tidy()
+b.lm <- lm(Similarity ~ SpatialDistance, data = b.dist.filt) %>% tidy() %>% filter(term == "SpatialDistance")
+b.dist.stats <- data.frame(label = paste("r = ", signif(b.cor$estimate,3), 
+                                       "\nslope = ", signif(b.lm$estimate, 3),
+                                       "\nP = ", signif(b.cor$p.value, 3)))
+
+e <- b.dist.filt %>% 
+  ggplot(aes(SpatialDistance, Similarity)) +
+  geom_point(shape = 16, size = 1, alpha = 0.5, color = "gray25") +
+  geom_text(data = b.dist.stats, aes(x = 1, y = .3, label = label), hjust = 0, size = 3) + 
+  geom_smooth(method = "lm", color = "black", se = F) +
+  scale_x_continuous(breaks = seq(0, 18, by = 3)) +
+  xlab("Distance between plots (m)") +
+  ylab("Bray-Curtis similarity") +
+  ylim(min.sim, max.sim) +
+  facet_wrap(~ Set) +
+  theme_bw() +
+  theme(text = element_text(size = 11),
+        legend.position = "top",
+        strip.background =element_rect(fill="gray25"),
+        strip.text = element_text(colour = "white"))
+
+e
+```
+491:738
+```{r}
+plot_grid(get_legend(b), NA, b,c, d,e, nrow = 3, rel_widths = c(5,5), labels = c("a", NA, "b","c", "d", "e"), label_size = 15)
+```

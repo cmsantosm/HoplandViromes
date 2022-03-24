@@ -1,0 +1,39 @@
+Load data
+```{r}
+library(biobroom)
+library(tidyverse)
+source("../General/general_functions.R")
+```
+
+Load data
+```{r}
+#Load mapping file
+map <- readRDS("../Data/map.RDS") %>% 
+  rename("SampleID" = "ViromeSampleID") %>% 
+  filter(SampleID != "V33") 
+
+#Load OTU and remove singletons
+otu.counts <- readRDS("../Data/votu_count75.RDS")
+otu.counts <- otu.counts[, match(map$SampleID, colnames(otu.counts))]
+otu.counts <- otu.counts[rowSums(otu.counts>0)>1,]
+```
+
+Run model 
+```{r}
+dds.position <- DESeq2::DESeqDataSetFromMatrix(countData = otu.counts,
+                                               colData = map,
+                                               design = ~ Position.x)
+
+dds.position <- DESeq2::DESeq(dds.position)
+
+res.position <- tidy(DESeq2::results(dds.position, name = "Position.x")) %>% 
+  dplyr::rename("OTU_ID" = "gene") %>% 
+  mutate(Factor = "Position",
+         Enrichment = ifelse(estimate > 0, "Right", "Left"))
+```
+Save results
+```{r}
+saveRDS(res.position, "../Data/votu_deseq_position.RDS")
+```
+
+

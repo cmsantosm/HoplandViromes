@@ -1,0 +1,74 @@
+Load libraries
+```{r}
+library(tidyverse)
+library(broom)
+source("../General/general_functions.R")
+```
+
+Load data
+```{r}
+#Load map
+map <- readRDS("../Data/map.RDS") %>% 
+  rename("SampleID" = "ViromeSampleID") %>% 
+  filter(SampleID != "V33") 
+
+#Load ANI data
+comp <- readRDS("../Data/instrain_compare.RDS")
+
+#Load occupancy data frame
+occupancy.df <- readRDS("../Data/votu_occupancy.RDS")
+```
+
+Identify prevalent vOTUs
+```{r}
+#First filter all vOTUs observed in at least 90% of samples
+prevalent.ids <- occupancy.df %>% 
+  mutate(Prevalent = Occupancy >= 43 * 0.90) %>% 
+  filter(Prevalent) %>% 
+  .$OTU_ID
+
+#Filter out pairwise comparisons where less than 25% of the vOTU sequences were compared
+filt.ids <- comp %>% 
+  filter(OTU_ID %in% prevalent.ids) %>% 
+  filter(percent_genome_compared > 0.25) %>% 
+  inner_join(map, by = c("SampleID.x" = "SampleID")) %>%
+  inner_join(map, by = c("SampleID.y" = "SampleID")) %>%
+  filter(Timepoint.x == Timepoint.y) %>%
+  group_by(OTU_ID) %>% 
+  mutate(Total = n()) %>% 
+  filter(Total > 1) %>% 
+  .$OTU_ID %>% 
+  unique()
+```
+
+Remove all ANI comparisons between different time points and save
+```{r}
+comp.filt <- comp %>% 
+  filter(OTU_ID %in% filt.ids) %>% 
+  filter(percent_genome_compared > 0.25) %>% 
+  inner_join(map, by = c("SampleID.x" = "SampleID")) %>% 
+  inner_join(map, by = c("SampleID.y" = "SampleID")) %>% 
+  filter(Timepoint.x == Timepoint.y) %>%
+  mutate(SpatialDistance = sqrt((Position.x.x - Position.x.y)^2 + (Position.y.x - Position.y.y)^2))
+
+saveRDS(comp.filt, "../Data/ani_prevalent.RDS")
+```
+
+Perform correlation analysis
+```{r}
+run_cor <- function(x) {
+  cor.test(x$conANI, x$SpatialDistance, method = "pearson", alternative = "two.sided") %>% tidy()
+}
+
+cor.nest <- comp.filt %>% 
+  group_by(OTU_ID) %>% 
+  nest() %>% 
+  mutate(cor = map(data, run_cor))
+
+estimate.df <- cor.nest %>% 
+  unnest(cor) %>% 
+  ungroup() %>% 
+  mutate(p.adj = p.adjust(p.value, method = "holm")) 
+
+saveRDS(estimate.df, "../Data/ani_correlations.RDS")
+```

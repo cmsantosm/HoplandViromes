@@ -1,0 +1,398 @@
+Load libraries
+```{r}
+library(cowplot)
+library(tidyverse)
+source("../General/general_functions.R")
+```
+
+Load data and reformat
+```{r}
+#Generate palette
+ntwk.palette = c(rcartocolor::carto_pal(7, "Tropic")[1:3], "gray85", rcartocolor::carto_pal(7, "Tropic")[5:7], "gray25")
+
+#Load PCoA scores and reformat
+pcoa.axes <- readRDS("../Data/votu_pcoa_axes.RDS") %>% 
+  mutate(WaterTreatment = fct_recode(WaterTreatment,
+                                "100" = "Full",
+                                "50" = "Half")) %>%
+  mutate(Group = paste(Timepoint, WaterTreatment, sep = "-")) %>% 
+  mutate(Group = as.factor(Group))
+pcoa.eigval <- readRDS("../Data/votu_pcoa_eigval.RDS")
+
+#Load map
+map <- readRDS("../Data/map.RDS") %>% 
+  rename("SampleID" = "ViromeSampleID") %>% 
+  filter(SampleID != "V33") 
+
+#Load OTU table and remove singletons
+otu <- readRDS("../Data/votu_tmean75.RDS")
+otu <- otu[,match(map$SampleID, colnames(otu))]
+otu <- otu[rowSums(otu>0)>1,]
+
+#Load gravimetric soil moisture data and reformat
+gsm <- read.table("../Data/gsm.tsv", header = T, sep = "\t") %>% 
+  inner_join(map, by = "SampleID") %>% 
+  mutate(WaterTreatment = fct_recode(WaterTreatment,
+                                "100" = "Full",
+                                "50" = "Half")) %>%
+  mutate(Group = paste(Timepoint, WaterTreatment, sep = "-")) %>% 
+  mutate(Group = as.factor(Group)) %>% 
+  mutate(GSM = GSM*100)
+
+#Load indicator species results
+res.trt <- readRDS("../Data/votu_indicator.RDS") %>% 
+  mutate("Genome" = "OTU_ID") 
+sig.trt <- filter(res.trt, p.value < 0.05)
+
+#Load safe subnetwork results
+sub.nodes <- readRDS("../Data/safe_ind_subntwk_nodes.RDS")
+sub.edges <- readRDS("../Data/safe_ind_subntwk_edges.RDS")
+
+#Load safe whole network data
+nodes <- readRDS("../Data/safe_ind_whole_nodes.RDS")
+edges <- readRDS("../Data/safe_ind_whole_edges.RDS")
+
+#Load links to RefSeq genomes
+pairs <- readRDS("../Data/refseq_ind_pairs.RDS") 
+
+#Format link data
+pairs.filt <- pairs %>% 
+  mutate(HostPhylum2 = ifelse(HostPhylum %in% c("Actinobacteria", "Bacteroidetes", "Firmicutes", "Proteobacteria"), as.character(HostPhylum), "Other")) %>% 
+  group_by(Set, hoplandOTU, HostPhylum2) %>% 
+  count() %>% 
+  group_by(Set, hoplandOTU) %>% 
+  mutate(Total = n()) %>% 
+  ungroup() %>% 
+  mutate(HostPhylum3 = ifelse(Total == 1, HostPhylum2, "Mixed")) %>% 
+  mutate(HostPhylum3 = fct_relevel(HostPhylum3, "Mixed", "Other")) %>% 
+  group_by(hoplandOTU, HostPhylum3) %>% 
+  count() %>% 
+  ungroup() %>% 
+  rename("Genome" = "hoplandOTU") %>% 
+  select(-n)
+```
+
+Function to get Tukey letter display
+```{r}
+get_letters <- function(tukey){
+  multcomp::cld(tukey, level = 0.05) %>% 
+    .$mcletters %>% 
+    .$Letters %>% 
+    as.data.frame() %>% 
+    rename(Letter = ".") %>% 
+    mutate(Group = row.names(.))
+}
+```
+
+Panel A
+```{r}
+#Get max value for plotting
+pcoa.max <- pcoa.axes %>% 
+  group_by(Group) %>% 
+  summarise(Max = max(Axis.3)) 
+
+#Run tukey tests
+lm <- lm(Axis.3 ~ Group, data = pcoa.axes)
+tukey <- multcomp::glht(lm, linfct = multcomp::mcp(Group = "Tukey")) %>% summary()
+letters <- get_letters(tukey) %>% 
+  inner_join(pcoa.max, by = "Group") #%>% 
+  # mutate(Group = fct_recode(Group,
+  #                           "T1-100" = "March\n100%",
+  #                           "T1-50" = "March\n50%",
+  #                           "T2-100" = "April\n100%",
+  #                           "T2-50" = "April\n50%"))
+#Plot
+pco3.p <- pcoa.axes %>% 
+  ggplot() +
+  geom_boxplot(aes(Group, Axis.3), size = 1) +
+  geom_text(data = letters, aes(Group, Max + 0.05, label = Letter), size = 4) +
+  ylab(paste("PCo3 (", pcoa.eigval$Eigval[3], "%)", sep = "")) +
+  theme_bw() +
+  theme(text = element_text(size = 12),
+        axis.text.x = element_text(angle = 45, hjust = 1),
+        axis.title.x = element_blank(),
+        legend.position = "none")
+
+pco3.p
+```
+
+Panel B
+```{r}
+#Get max value for plotting
+gsm.max <- gsm %>%
+  group_by(Group) %>% 
+  summarise(Max = max(GSM))
+
+#Runk Tukey tests
+gsm.lm <- lm(GSM ~ Group, data = gsm)
+gsm.tukey <- multcomp::glht(gsm.lm, linfct = multcomp::mcp(Group = "Tukey")) %>% summary()
+gsm.letters <- get_letters(gsm.tukey) %>% 
+  inner_join(gsm.max, by = "Group") #%>% 
+ 
+#Plot
+gsm.p <- gsm %>% 
+  ggplot(aes(Group, GSM)) +
+  geom_boxplot(size = 1) +
+  geom_text(data = gsm.letters, aes(Group, Max + 1, label = Letter), size = 4) +
+  scale_fill_manual(values = rcartocolor::carto_pal(7, "Tropic")[c(1,2,3,7)]) +
+  ylab("Gravimetric soil moisture (%)") +
+  theme_bw() +
+  theme(text = element_text(size = 12),
+        axis.text.x = element_text(angle = 45, hjust = 1),
+        axis.title.x = element_blank(),
+        legend.position = "none")
+
+gsm.p
+```
+
+Panel C
+```{r}
+#Get total number of vOTUs in each subset for plotting
+dry.total <- res.trt %>% filter(Response == "Dry") %>% nrow()
+wet.total <- res.trt %>% filter(Response == "Wet") %>% nrow()
+
+#Generate labels with the response and the number of vOTUs
+dry.label <- paste("Enriched in T2-50\n(",dry.total, "vOTUs)", sep = "")
+wet.label <- paste("Depleted in T2-50\n(",wet.total, "vOTUs)", sep = "")
+
+#Calculate the total abundances for each subset of samples
+total.ab<- otu %>% 
+  rel_ab() %>% 
+  tidy_otu() %>% 
+  mutate(Count = Count/100) %>% 
+  inner_join(res.trt, by = "OTU_ID") %>% 
+  filter(p.value < 0.05) %>% 
+  inner_join(map, by = "SampleID") %>% 
+  group_by(Timepoint, WaterTreatment, Response, OTU_ID) %>%
+  summarise(MeanRelAb = mean(Count)) %>% 
+  group_by(Timepoint, WaterTreatment, Response) %>%
+  summarise(TotalRelAb = sum(MeanRelAb)) %>%
+  ungroup() %>% 
+  mutate(Response = ifelse(Response == "Dry", dry.label, wet.label)) %>% 
+  mutate(Response = fct_relevel(Response, dry.label)) %>% 
+  mutate(WaterTreatment = fct_recode(WaterTreatment,
+                                     "50" = "Half",
+                                     "100" = "Full")) 
+
+#Plot
+indic.p <- total.ab %>% 
+  ggplot(aes(paste(Timepoint, WaterTreatment, sep = "-"), TotalRelAb, fill = Response)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  scale_fill_manual(values = ntwk.palette[c(7,2)]) +
+  facet_grid(. ~ Response) +
+  ylab("Mean relative abundance") +
+  theme_bw() +
+  theme(text = element_text(size = 12),
+        axis.text.x = element_text(angle = 45, hjust = 1),
+        axis.title.x = element_blank(),
+        strip.background =element_rect(fill="gray25"),
+        strip.text = element_text(colour = "white"),
+        legend.position = "none")
+
+indic.p
+```
+
+Panel D
+```{r}
+#Add indicator species annotations to network
+whole.res <- nodes %>% 
+  inner_join(res.trt, by = c("Genome" = "OTU_ID"))
+
+#Establish parameters
+node.size <- 1
+stroke.size <- 0.5
+
+#Plot
+whole.ntwk.p <- whole.res %>% 
+  ggplot(aes(x,y)) +
+  geom_line(data = edges, aes(x, y, group = Pair), color = "black", alpha = 0.1, size = 0.2) +
+  geom_point(data = filter(whole.res, Response == "NS" & !Genome %in% sub.nodes$Genome), aes(x, y, color = Response), alpha = 1, size = node.size , shape = 16) +
+  geom_point(data = filter(whole.res, Response != "NS" & !Genome %in% sub.nodes$Genome), aes(x, y, color = Response), alpha = 1, size = node.size, shape = 16) +
+  geom_point(data = filter(whole.res, Response == "NS" & Genome %in% sub.nodes$Genome), aes(x, y, fill = Response), alpha = 1, size = node.size , shape = 21, color = "black", stroke = stroke.size) +
+  geom_point(data = filter(whole.res, Response != "NS" & Genome %in% sub.nodes$Genome), aes(x, y, fill = Response), alpha = 1, size = node.size, shape = 21, color = "black", stroke = stroke.size) +
+  scale_fill_manual(values = ntwk.palette[c(2,4,7)],
+                    limits = c("Wet", "NS", "Dry")) +
+  scale_color_manual(values = ntwk.palette[c(2,4,7)],
+                    limits = c("Wet", "NS", "Dry")) +
+  theme(axis.text = element_blank(),
+        axis.title = element_blank(),
+        axis.ticks = element_blank(),
+        axis.line = element_blank(),
+        panel.grid = element_blank(),
+        panel.background = element_rect(fill = "white"),
+        legend.position = "none")
+
+whole.ntwk.p
+```
+
+Panel E
+```{r}
+#Add indicator species annotations and host taxonomy to subnetwork
+sub.res <- sub.nodes %>% 
+  inner_join(res.trt, by = c("Genome" = "OTU_ID")) %>% 
+  left_join(pairs.filt, by = "Genome") %>% 
+  mutate(HostPhylum = ifelse(is.na(HostPhylum3), "Unassigned", as.character(HostPhylum3)))
+
+#Plot
+subntwk.p <- sub.res %>% 
+  ggplot() +
+  geom_line(data = sub.edges, aes(x, y, group = Pair), color = "black", alpha = 0.25, size = 0.1) +
+  geom_point(data = filter(sub.res, Response == "NS"), aes(x, y, color = Response), alpha = 1, size = 3 , shape = 16) +
+  geom_point(data = filter(sub.res, Response != "NS"), aes(x, y, color = Response), alpha = 1, size = 3, shape = 16) +
+  geom_label(data = filter(sub.res, HostPhylum == "Actinobacteria"), aes(x, y), label = "A", size = 2, alpha = 0.2, shape = 1) +
+  scale_color_manual(values = ntwk.palette[c(2,4,7)],
+                    limits = c("Wet", "NS", "Dry")) +
+  theme(axis.text = element_blank(),
+        axis.title = element_blank(),
+        axis.ticks = element_blank(),
+        axis.line = element_blank(),
+        panel.grid = element_blank(),
+        panel.background = element_rect(fill = "white"),
+        legend.position = "none")
+
+subntwk.p 
+```
+
+Generate temporary plots to retrieve labels from
+```{r}
+#Color legend
+legend.colors.tmp <- whole.res %>% 
+  ggplot() +
+  geom_point(aes(x,y, color = Response), size = 3) +
+  scale_color_manual(name = "",
+                    values = ntwk.palette[c(7,1,4)],
+                    limits = c("Dry", "Wet", "NS"),
+                    labels = c("Enriched in T2-50", "Depleted in T2-50", "P ≥ 0.05")) +
+  guides(color = guide_legend(ncol = 1)) +
+  theme_void() +
+  theme(text = element_text(size = 12),
+        legend.title = element_text(size = 10),
+        legend.position = "right")
+
+legend.colors <- cowplot::get_legend(legend.colors.tmp)
+
+#Subnetwork legend
+wholentwk.label.tmp <- sub.res %>% 
+  mutate(HostPhylum = fct_recode(HostPhylum,
+                                 "Subnetwork with an overrepresentation of\nvOTUs enriched in T2-50 viromes" = "Unassigned")) %>% 
+  filter(HostPhylum == "Subnetwork with an overrepresentation of\nvOTUs enriched in T2-50 viromes") %>% 
+  ggplot() +
+  geom_point(aes(x, y,color = HostPhylum, shape = HostPhylum), alpha = 1, size = 4, stroke = 1) +
+  scale_color_manual(values = c("black", "black")) +
+  scale_shape_manual(values = c(21)) +
+  theme(text = element_text(size = 12),
+        legend.title = element_blank())
+
+#Actinophage legend
+subntwk.label.tmp <- sub.res %>% 
+  mutate(HostPhylum = fct_recode(HostPhylum,
+                                 "vOTU connected to a RefSeq actinophage" = "Actinobacteria")) %>% 
+  filter(HostPhylum == "vOTU connected to a RefSeq actinophage") %>% 
+  ggplot() +
+  geom_point(aes(x, y,color = HostPhylum, shape = HostPhylum), alpha = 1, size = 4, stroke = 1) +
+  scale_color_manual(values = c("black", "black")) +
+  scale_shape_manual(values = c(65)) +
+  theme(text = element_text(size = 12),
+        legend.title = element_blank())
+
+
+wholentwk.label <- cowplot::get_legend(wholentwk.label.tmp)
+subntwk.label <- cowplot::get_legend(subntwk.label.tmp)
+```
+
+Generate donut plots
+```{r}
+#Get the total of vOTUs in the subnetwork
+sub.total <- sub.res %>% 
+  summarise(Total = n())
+
+#Calculate the size of each subset for the subnetwork
+sub.donut.df <- sub.res %>% 
+  group_by(Response) %>% 
+  summarise(Count = n()) %>% 
+  ungroup() %>% 
+  mutate(Response = fct_relevel(Response, c("Wet", "NS", "Dry"))) %>% 
+  arrange((Response)) %>% 
+  mutate(Fraction = Count/sum(Count)) %>% 
+  mutate(ymax = cumsum(Fraction),
+         nResponse = n()) %>% 
+  mutate(ymin = c(0, ymax[1:nResponse - 1]))
+
+#Plot subnetwork donut plot
+sub.donut.p <- sub.donut.df %>% 
+  ggplot() +
+  geom_rect(aes(ymax = ymax, ymin = ymin, xmax = 4, xmin = 3, fill = Response)) +
+  geom_text(data = sub.total, aes(2, 0, label = Total), size = 5) +
+  scale_fill_manual(values = ntwk.palette[c(2,4,7)],
+                    limits = c("Wet", "NS", "Dry")) +
+  coord_polar(theta="y") + 
+  xlim(c(2, 4)) +
+  theme_void() +
+  theme(text = element_text(size = 12),
+        legend.position = "none",
+        legend.title = element_blank(),
+        strip.background = element_blank(),
+        strip.text = element_blank())
+
+sub.donut.p
+
+#Get the total of vOTUs in the whole network
+whole.total <- whole.res %>% 
+  summarise(Total = n())
+  
+#Calculate the size of each subset for the whole network
+whole.donut.df <- whole.res %>% 
+  group_by(Response) %>% 
+  summarise(Count = n()) %>% 
+  ungroup() %>% 
+  mutate(Response = fct_relevel(Response, c("Wet", "NS", "Dry"))) %>% 
+  arrange((Response)) %>% 
+  mutate(Fraction = Count/sum(Count)) %>% 
+  mutate(ymax = cumsum(Fraction),
+         nResponse = n()) %>% 
+  mutate(ymin = c(0, ymax[1:nResponse - 1])) 
+
+#Plot whole network donut plot
+whole.donut.p <- whole.donut.df %>% 
+  ggplot() +
+  geom_rect(aes(ymax = ymax, ymin = ymin, xmax = 4, xmin = 3, fill = Response)) +
+  geom_text(data = whole.total, aes(2, 0, label = Total), size = 5) +
+  scale_fill_manual(values = ntwk.palette[c(2,4,7)],
+                    limits = c("Wet", "NS", "Dry")) +
+  guides(fill = guide_legend(ncol = 4)) +
+  coord_polar(theta="y") + 
+  xlim(c(2, 4)) +
+  theme_void() +
+  theme(text = element_text(size = 12),
+        legend.position = "none",
+        legend.title = element_blank(),
+        strip.background = element_blank(),
+        strip.text = element_blank())
+
+donut.p <- plot_grid(whole.donut.p, sub.donut.p, legend.colors, nrow = 1)
+
+donut.p
+```
+
+Generate top panel
+```{r}
+top <- plot_grid(pco3.p, gsm.p, indic.p, nrow = 1, labels = c("a", "b", "c"), label_size = 15, rel_widths = c(3,3,4), align = "h", axis = "lr")
+top
+```
+
+Generate middle panel
+```{r}
+mid.1 <- plot_grid(whole.ntwk.p, wholentwk.label, ncol = 1, rel_heights = c(5,1))
+mid.2 <- plot_grid(subntwk.p, subntwk.label, ncol = 1, rel_heights = c(5,1))
+
+mid <- plot_grid(mid.1, mid.2, nrow = 1, rel_widths = c(3,3),labels = c("d", "e"), label_size = 15)
+
+mid
+```
+
+Put it all together
+800:910
+```{r}
+plot_grid(top, mid, donut.p, nrow = 3, rel_heights = c(2,3,1))
+```
+

@@ -1,0 +1,218 @@
+Load libraries
+```{r}
+library(multcompView)
+library(RColorBrewer)
+library(rcartocolor)
+library(cowplot)
+library(tidyverse)
+source("../General/general_functions.R")
+```
+Function to get the letter display for wilcoxon tests. 
+From: https://fabiomarroni.wordpress.com/2017/03/25/perform-pairwise-wilcoxon-test-classify-groups-by-significance-and-plot-results/
+```{r}
+tri.to.squ<-function(x)
+{
+rn<-row.names(x)
+cn<-colnames(x)
+an<-unique(c(cn,rn))
+myval<-x[!is.na(x)]
+mymat<-matrix(1,nrow=length(an),ncol=length(an),dimnames=list(an,an))
+for(ext in 1:length(cn))
+{
+ for(int in 1:length(rn))
+ {
+ if(is.na(x[row.names(x)==rn[int],colnames(x)==cn[ext]])) next
+ mymat[row.names(mymat)==rn[int],colnames(mymat)==cn[ext]]<-x[row.names(x)==rn[int],colnames(x)==cn[ext]]
+ mymat[row.names(mymat)==cn[ext],colnames(mymat)==rn[int]]<-x[row.names(x)==rn[int],colnames(x)==cn[ext]]
+ }
+  
+}
+return(mymat)
+}
+```
+
+Load and format amplicon data
+```{r}
+#Mapping file
+map <- readRDS("../Data/map.RDS") %>% 
+  rename("SampleID" = "AmpliconSampleID") %>% 
+  mutate(WaterTreatment = fct_recode(WaterTreatment,
+                                     "100" = "Full",
+                                     "50" = "Half")) %>% 
+  mutate(Group = paste(Timepoint, WaterTreatment, sep = "-")) %>% 
+  mutate(Group = as.factor(Group))
+
+#Load OTU table and remove singletons
+otu <- readRDS("../Data/bac_otu97.RDS")
+otu <- otu[,match(map$SampleID, colnames(otu))]
+otu <- otu[rowSums(otu>0)>1,]
+
+#Load taxonomy file 
+otu.tax <- readRDS("../Data/bac_tax97.RDS") 
+
+#Generate a data frame with the relative abundances aggregated by phylum
+phy.otu <- otu %>% 
+  rel_ab() %>% 
+  tidy_otu() %>% 
+  mutate(Count = Count/100) %>% 
+  filter(Count > 0) %>% 
+  inner_join(otu.tax, by = "OTU_ID") %>% 
+  group_by(SampleID, Phylum) %>% 
+  summarise(PhyRelAb = sum(Count)) %>% 
+  inner_join(map, by = "SampleID") 
+
+#Fin the max Actino abundance for plotting
+phy.max <- phy.otu %>% 
+  filter(Phylum == "Actinobacteria") %>% 
+  group_by(Group) %>% 
+  summarise(Max = max(PhyRelAb))
+
+#Perform Wilcoxon tests and recover letter display
+kruskal.test(PhyRelAb ~ Group, data = filter(phy.otu, Phylum == "Actinobacteria"))
+wilcox.otu <- pairwise.wilcox.test(filter(phy.otu, Phylum == "Actinobacteria")$PhyRelAb, filter(phy.otu, Phylum == "Actinobacteria")$Group,
+                 p.adjust.method = "holm") %>% 
+  .$p.value %>% 
+  tri.to.squ()
+letters.otu.tmp <- multcompLetters(wilcox.otu,compare="<=",threshold=0.05,Letters=letters)
+letters.otu <- data.frame(Group = names(letters.otu.tmp$Letters), Letter = letters.otu.tmp$Letters) %>% 
+   inner_join(phy.max, by = "Group")
+```
+
+Load and format virome rRNA data
+```{r}
+#Mapping file
+rrna.map <- readRDS("../Data/map.RDS") %>% 
+  rename("SampleID" = "ViromeSampleID") %>% 
+  mutate(WaterTreatment = fct_recode(WaterTreatment,
+                                     "100" = "Full",
+                                     "50" = "Half")) %>% 
+  mutate(Group = paste(Timepoint, WaterTreatment, sep = "-")) %>% 
+  mutate(Group = as.factor(Group))
+
+#Load OTU table and taxonomy
+rrna.otu <- readRDS("../Data/virome_rrna_otu.RDS")
+rrna.tax <- readRDS("../Data/virome_rrna_tax.RDS")
+
+#Generate a data frame with the relative abundances aggregated by phylum
+phy.rrna <- rrna.otu %>% 
+  rel_ab() %>% 
+  tidy_otu() %>% 
+  mutate(Count = Count/100) %>% 
+  filter(Count > 0) %>% 
+  inner_join(rrna.tax, by = "OTU_ID") %>% 
+  group_by(SampleID, Phylum) %>% 
+  summarise(PhyRelAb = sum(Count)) %>% 
+  inner_join(rrna.map, by = "SampleID") 
+
+#Fin the max Actino abundance for plotting
+phy.rrna.max <- phy.rrna %>% 
+  filter(Phylum == "Actinobacteria") %>% 
+  group_by(Group) %>% 
+  summarise(Max = max(PhyRelAb))
+
+#Perform Wilcoxon tests and recover letter display
+kruskal.test(PhyRelAb ~ Group, data = filter(phy.rrna, Phylum == "Actinobacteria"))
+wilcox.rrna <- pairwise.wilcox.test(filter(phy.rrna, Phylum == "Actinobacteria")$PhyRelAb, filter(phy.rrna, Phylum == "Actinobacteria")$Group,
+                 p.adjust.method = "holm") %>% 
+  .$p.value %>% 
+  tri.to.squ()
+letters.rrna.tmp <- multcompLetters(wilcox.rrna,compare="<=",threshold=0.05,Letters=letters)
+letters.rrna <- data.frame(Group = names(letters.rrna.tmp$Letters), Letter = letters.rrna.tmp$Letters) %>% 
+   inner_join(phy.rrna.max, by = "Group")
+```
+Generate a master file and identify the top 10 most abundant phyla
+```{r}
+phy.all <- rbind(mutate(phy.otu, Set = "Total DNA"),
+                 mutate(phy.rrna, Set = "Virome DNA")) 
+
+top.phy <- phy.all %>% 
+  group_by(Phylum) %>% 
+  summarise(Total = sum(PhyRelAb)) %>% 
+  arrange(-Total) %>% 
+  head(n = 10) %>% 
+  .$Phylum
+```
+
+Plot
+```{r}
+a <- phy.all %>% 
+  filter(Set == "Total DNA") %>% 
+  mutate(Phylum2 = ifelse(Phylum %in% top.phy, as.character(Phylum), "Low abundance")) %>% 
+  mutate(Phylum2 = fct_relevel(Phylum2, "Low abundance")) %>% 
+  mutate(Phylum2 = fct_relevel(Phylum2, "Actinobacteria", after = Inf)) %>% 
+  ggplot(aes(SampleID, PhyRelAb, fill = Phylum2)) +
+  geom_bar(stat = "identity") +
+  ylab("Relative abundance") +
+  facet_grid(. ~ Group, scales = "free") +
+  scale_fill_manual(name = "Phylum", values = c("gray25", carto_pal(12, "Bold")[11:1])) +
+  theme_bw() +
+  theme(text = element_text(size = 12),
+        axis.text.x = element_blank(),
+        axis.ticks.x = element_blank(),
+        axis.title.x = element_blank(),
+        legend.position = "bottom",
+        strip.background =element_rect(fill="gray25"),
+        strip.text = element_text(colour = "white"))
+
+b <- phy.all %>% 
+  filter(Set == "Total DNA") %>% 
+  filter(Phylum == "Actinobacteria") %>% 
+  ggplot(aes(Group, PhyRelAb)) +
+  geom_boxplot(size = 1, fill = carto_pal(12, "Bold")[2]) +
+  geom_text(data = letters.otu, aes(Group, Max + 0.03, label = Letter), size = 4) +
+  ylab(paste("Actinobacteria\nrelative abundance")) +
+  facet_grid(. ~ Set, scales = "free") +
+  theme_bw() +
+  theme(text = element_text(size = 12),
+        axis.title = element_text(size = 12),
+        #axis.text.x = element_text(angle = 45, hjust = 1),
+        axis.title.x = element_blank(),
+        legend.position = "none",
+        strip.background =element_rect(fill="gray25"),
+        strip.text = element_text(colour = "white"))
+
+c <- phy.all %>% 
+  filter(Set == "Virome DNA") %>% 
+  mutate(Phylum2 = ifelse(Phylum %in% top.phy, as.character(Phylum), "Low abundance")) %>% 
+  mutate(Phylum2 = fct_relevel(Phylum2, "Low abundance")) %>% 
+  mutate(Phylum2 = fct_relevel(Phylum2, "Actinobacteria", after = Inf)) %>% 
+  ggplot(aes(SampleID, PhyRelAb, fill = Phylum2)) +
+  geom_bar(stat = "identity") +
+  ylab("Relative abundance") +
+  facet_grid(. ~ Group, scales = "free") +
+  scale_fill_manual(name = "Phylum", values = c("gray25", carto_pal(12, "Bold")[11:1])) +
+  theme_bw() +
+  theme(text = element_text(size = 12),
+        axis.text.x = element_blank(),
+        axis.ticks.x = element_blank(),
+        axis.title.x = element_blank(),
+        legend.position = "bottom",
+        strip.background =element_rect(fill="gray25"),
+        strip.text = element_text(colour = "white"))
+
+d <- phy.all %>% 
+  filter(Set == "Virome DNA") %>% 
+  filter(Phylum == "Actinobacteria") %>% 
+  ggplot(aes(Group, PhyRelAb)) +
+  geom_boxplot(size = 1, fill = carto_pal(12, "Bold")[2]) +
+  geom_text(data = letters.rrna, aes(Group, Max + 0.03, label = Letter), size = 4) +
+  ylab(paste("Actinobacteria\nrelative abundance")) +
+  facet_grid(. ~ Set, scales = "free") +
+  theme_bw() +
+  theme(text = element_text(size = 12),
+        axis.title = element_text(size = 12),
+        #axis.text.x = element_text(angle = 45, hjust = 1),
+        axis.title.x = element_blank(),
+        legend.position = "none",
+        strip.background =element_rect(fill="gray25"),
+        strip.text = element_text(colour = "white"))
+
+top <- plot_grid(a + theme(legend.position = "none"), b, c + theme(legend.position = "none"), d, align = "h", axis = "tb", labels = c("a", "b", "c", "d"), label_size = 15, rel_widths = c(3,2))
+top
+```
+
+669:650
+```{r}
+plot_grid(top, get_legend(a + theme(legend.position = "bottom")), nrow = 2, rel_heights = c(4,1))
+```
+

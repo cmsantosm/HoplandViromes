@@ -1,0 +1,89 @@
+Load libraries
+```{r}
+source("../General/general_functions.R")
+library(tidyverse)
+```
+
+Load data
+```{r}
+#Load OTU table
+#otu <- readRDS("../Data/votu_tmean75.RDS")
+
+#Load orignal vConTACT2 network layout
+whole.nodes <- readRDS("../Data/ntwk_nodes.RDS")
+whole.edges <- readRDS("../Data/ntwk_edges.RDS") 
+
+#Load T2-50 safe subnetwork layout
+sub.nodes <- readRDS("../Data/safe_ind_subntwk_nodes.RDS")
+sub.edges <- readRDS("../Data/safe_ind_subntwk_edges.RDS")
+
+#Load safe whole network layout
+safe.nodes <- readRDS("../Data/safe_ind_whole_nodes.RDS")
+safe.edges <- readRDS("../Data/safe_ind_whole_edges.RDS")
+
+#Load vContact2 cluster data
+clusters.tax <- readRDS("../Data/cluster_vc_master.RDS")
+clusters <- readRDS("../Data/genome_vc_master.RDS")
+clusters.filt <- clusters %>% 
+  select(Genome, VC, Source) %>% 
+  inner_join(clusters.tax, by = "VC")
+
+#Load Refseq host taxonomy
+refseq.tax <- readRDS("../Data/refseq_host_tax.RDS")
+```
+
+Subsetting the network to only include all RefSeq nodes and the vOTUs that were used for the differential abundance analysis.
+```{r}
+ntwk <- whole.edges %>% 
+  mutate(Source = ifelse(str_detect(Genome, "V\\d\\d_VIR"), "hopland", "refseq")) %>% 
+  filter(Source == "refseq" | Genome %in% safe.nodes$Genome) %>% 
+  group_by(Pair) %>% 
+  mutate(Total = n()) %>% 
+  ungroup() %>% 
+  filter(Total > 1) %>% 
+  select(Genome, Score, Member, Pair) %>% 
+  spread(key = Member, value = Genome) %>% 
+  select(OTU1, OTU2, Score)
+
+#Generate a new layout with the filtered network
+nodes <- GGally::ggnet2(ntwk[,-3], 
+                mode = "fruchtermanreingold", 
+                layout.par = list(list=(niter=2000))) %>% 
+  .$data %>% 
+  dplyr::rename("Genome" = "label") %>% 
+  mutate(Source = ifelse(str_detect(Genome, "V\\d\\d_VIR"), "hopland", "refseq")) %>% 
+  mutate(Subnetwork = ifelse(Genome %in% sub.nodes$Genome, T, F)) 
+
+edges <- ntwk %>% 
+  mutate(Pair = paste(OTU1, OTU2, sep = ".")) %>% 
+  gather(key = "Member", value = "Genome", -Pair, -Score) %>% 
+  inner_join(nodes, by = "Genome")  
+```
+
+Extract all the vOTUs linked to a RefSeq node
+```{r}
+pairs.tmp <- ntwk %>% 
+  mutate(Source1 = ifelse(str_detect(OTU1, "V\\d\\d_VIR"), "hopland", "refseq"),
+         Source2 = ifelse(str_detect(OTU2, "V\\d\\d_VIR"), "hopland", "refseq")) %>% 
+  filter(Source1 != Source2) %>% 
+  mutate(Pair = paste(OTU1, OTU2, sep = ".")) %>% 
+  mutate(hoplandOTU = ifelse(Source1 == "hopland", OTU1, OTU2),
+         refseqOTU = ifelse(Source1 == "refseq", OTU1, OTU2)) %>% 
+  group_by(hoplandOTU, refseqOTU) %>% 
+  count() %>% 
+  ungroup() %>% 
+  select(-n) %>% 
+  inner_join(refseq.tax, by = c("refseqOTU" = "Genome")) %>% 
+  mutate(Subnetwork = ifelse(hoplandOTU %in% sub.nodes$Genome, T, F)) 
+  
+pairs.master <-  rbind(pairs.tmp %>% mutate(Set = "Whole network"),
+                       pairs.tmp %>% filter(Subnetwork) %>% mutate(Set = "Subnetwork")) 
+```
+
+Save results
+```{r}
+saveRDS(nodes, "../Data/refseq_ind_nodes.RDS")
+saveRDS(edges, "../Data/refseq_ind_edges.RDS")
+saveRDS(pairs.master, "../Data/refseq_ind_pairs.RDS")
+```
+
