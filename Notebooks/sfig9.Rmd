@@ -1,0 +1,79 @@
+Load libraries
+```{r}
+library(tidyverse)
+source("../General/general_functions.R")
+```
+
+Function to get Tukey test letter display
+```{r}
+get_letters <- function(tukey){
+  multcomp::cld(tukey, level = 0.05) %>% 
+    .$mcletters %>% 
+    .$Letters %>% 
+    as.data.frame() %>% 
+    rename(Letter = ".") %>% 
+    mutate(Group = row.names(.))
+}
+```
+
+
+Load data and reformat
+```{r}
+#Load PCoA scores and eigenvalues
+pcoa.eigval <- readRDS("../Data/bac_otu97_pcoa_eigval.RDS")
+pcoa.axes <- readRDS("../Data/bac_otu97_pcoa_axes.RDS") %>% 
+  select(Axis.1:Axis.5, SampleID:Position.y) %>% 
+  mutate(WaterTreatment = ifelse(WaterTreatment == "Full", "100", "50")) %>% 
+  mutate(Group = paste(Timepoint, WaterTreatment, sep = "-")) %>% 
+  mutate(Group = as.factor(Group)) %>% 
+  gather(key = "Axis", value = "Value", Axis.1:Axis.5) %>% 
+  mutate(PC = as.integer(str_extract(Axis, "\\d"))) %>% 
+  inner_join(pcoa.eigval, by = "PC") %>% 
+  mutate(PC_full = paste("PCo", PC, " (", Eigval, "%)", sep = ""))
+  
+#Find max values for plotting
+pcoa.max <- pcoa.axes %>% 
+  group_by(PC_full, Group) %>% 
+  summarise(Max = max(Value))
+```
+
+Run tukey tests
+```{r}
+run_lm <- function(x) {
+  lm(Value ~ Group, data = x)
+} 
+
+run_tukey <- function(lm){
+  multcomp::glht(lm, linfct = multcomp::mcp(Group = "Tukey")) %>% summary()
+}
+
+#Get letter display
+pcoa.letters <- pcoa.axes %>% 
+  group_by(PC_full) %>% 
+  nest() %>% 
+  mutate(lm = map(data, run_lm)) %>% 
+  mutate(tukey = map(lm, run_tukey)) %>% 
+  mutate(letters = map(tukey, get_letters)) %>% 
+  unnest(letters) %>% 
+  inner_join(pcoa.max, by = c("PC_full", "Group"))
+```
+
+Plot
+```{r}
+pcoa.axes %>% 
+  ggplot() +
+  geom_boxplot(aes(Group, Value), size = 1) +
+  geom_text(data = pcoa.letters, aes(Group, Max + 0.05, label = Letter), size = 4) +
+  ylab("PCo score") +
+  theme_bw() +
+  facet_wrap(~PC_full, scales = "free", nrow = 1) +
+  theme(text = element_text(size = 12),
+        axis.title = element_text(size = 12),
+        axis.text.x = element_text(angle = 45, hjust = 1),
+        strip.background =element_rect(fill="gray25"),
+        strip.text = element_text(colour = "white"),
+        axis.title.x = element_blank(),
+        legend.position = "none")
+
+```
+

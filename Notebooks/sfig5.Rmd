@@ -1,0 +1,100 @@
+Load libraries
+```{r}
+library(cowplot)
+library(broom)
+library(tidyverse)
+```
+
+Load data and reformat
+```{r}
+#Load vOTU BC dissimilarities
+v.bc.dist.tidy <- readRDS("../Data/votu_braycurtis_tidy.RDS") %>% mutate(Set = "vOTUs")
+
+#Filter BC so that only pairwise comparisons within time points are considered. Transform dissimilarities to similarities.
+v.dist.filt <- v.bc.dist.tidy %>% 
+  filter(Distance > 0) %>% 
+  filter(Timepoint.x == Timepoint.y) %>% 
+  mutate(SpatialDistance = sqrt((Position.x.x - Position.x.y)^2 + (Position.y.x - Position.y.y)^2)) %>% 
+  select(SampleID.x, SampleID.y, Distance, SpatialDistance) %>% 
+  rename("ViralDistance" = "Distance")
+
+
+#Load amplicon BC dissimilarities
+b.bc.dist.tidy <- readRDS("../Data/bac_otu97_braycurtis_tidy.RDS") %>% mutate(Set = "16S rRNA gene OTUs")
+
+#Filter BC so that only pairwise comparisons within time points are considered. Transform dissimilarities to similarities.
+b.dist.filt <- b.bc.dist.tidy %>% 
+  filter(Distance > 0) %>% 
+  filter(Timepoint.x == Timepoint.y) %>% 
+  select(ViromeSampleID.x, ViromeSampleID.y, Distance) %>% 
+  rename("BacterialDistance" = "Distance",
+         "SampleID.x" = "ViromeSampleID.x",
+         "SampleID.y" = "ViromeSampleID.y")
+
+#Load environmental distances
+nut.dist.tidy <- readRDS("../Data/nutrient_env_distance.RDS")
+
+nut.dist.filt <- nut.dist.tidy %>% 
+  filter(EucDist > 0) %>% 
+  select(SampleID.x, SampleID.y, EucDist) %>% 
+  rename("EnvironmentalDistance" = "EucDist")
+```
+
+
+```{r}
+master.dist <- nut.dist.filt %>% 
+  right_join(v.dist.filt, by = c("SampleID.x", "SampleID.y")) %>% 
+  right_join(b.dist.filt, by = c("SampleID.x", "SampleID.y"))
+```
+
+```{r}
+#Perform Pearson correlation test and regression to get stats
+v.b.cor <- cor.test(master.dist$ViralDistance, master.dist$BacterialDistance, method = "pearson", alternative = "two.sided") %>% tidy()
+v.b.lm <- lm(ViralDistance ~ BacterialDistance, data = master.dist) %>% tidy() %>% filter(term == "BacterialDistance")
+v.b.dist.stats <- data.frame(label = paste("r = ", signif(v.b.cor$estimate,3), 
+                                             "\nslope = ", signif(v.b.lm$estimate, 3),
+                                             "\nP = ", signif(v.b.cor$p.value, 3)))
+
+v.b.plot <- master.dist %>% 
+  ggplot(aes(BacterialDistance, ViralDistance)) +
+  geom_point(shape = 16, size = 1, alpha = 0.5, color = "gray25") +
+  geom_text(data = v.b.dist.stats, aes(x = 0.5, y = 0.3, label = label), hjust = 0, size = 3) + 
+  geom_smooth(method = "lm", color = "black", se = F) +
+  xlab("16S OTU Bray-Curtis dissimilarity") +
+  ylab("vOTU Bray-Curtis dissimilarity") +
+  theme_bw() +
+  theme(text = element_text(size = 11),
+        legend.position = "top",
+        strip.background =element_rect(fill="gray25"),
+        strip.text = element_text(colour = "white"))
+
+v.b.plot
+```
+
+```{r}
+v.e.cor <- cor.test(master.dist$ViralDistance, master.dist$EnvironmentalDistance, method = "pearson", alternative = "two.sided") %>% tidy()
+v.e.lm <- lm(ViralDistance ~ EnvironmentalDistance, data = master.dist) %>% tidy() %>% filter(term == "EnvironmentalDistance")
+v.e.dist.stats <- data.frame(label = paste("r = ", signif(v.e.cor$estimate,3), 
+                                             "\nslope = ", signif(v.e.lm$estimate, 3),
+                                             "\nP = ", signif(v.e.cor$p.value, 3)))
+
+v.e.plot <- master.dist %>% 
+  ggplot(aes(EnvironmentalDistance, ViralDistance)) +
+  geom_point(shape = 16, size = 1, alpha = 0.5, color = "gray25") +
+  geom_text(data = v.e.dist.stats, aes(x = 6, y = 0.3, label = label), hjust = 0, size = 3) + 
+  geom_smooth(method = "lm", color = "black", se = F) +
+  xlab("Environmental distance") +
+  ylab("vOTU Bray-Curtis disimilarity") +
+  theme_bw() +
+  theme(text = element_text(size = 11),
+        legend.position = "top",
+        strip.background =element_rect(fill="gray25"),
+        strip.text = element_text(colour = "white"))
+
+v.e.plot
+```
+
+600:300
+```{r}
+plot_grid(v.b.plot, v.e.plot, nrow = 1, labels = c("a","b"), label_size = 15)
+```

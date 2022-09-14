@@ -7,7 +7,8 @@ source("../General/general_functions.R")
 Load mapping file and OTU table and reformat
 ```{r}
 map <- readRDS("../Data/map.RDS") %>% 
-  rename("SampleID" = "AmpliconSampleID")
+  rename("SampleID" = "AmpliconSampleID") %>% 
+  mutate(Position.y = ifelse(Position.y > 0, 7.5 + 1.8, 0))
 
 otu <- readRDS("../Data/bac_otu97.RDS")
 otu <- otu[,match(map$SampleID, colnames(otu))]
@@ -19,11 +20,23 @@ otu <- otu[rowSums(otu>0)>1,]
 otu.norm <- otu %>% rel_ab() %>% log_norm()
 ```
 
-Perform principal coordinates analysis
+Perform PERMANOVA
 ```{r}
 #Calculate Bray-Curtis dissimilarities
 bc.dist <- beta_div_dist(otu.norm)
 
+permanova <- vegan::adonis(as.dist(bc.dist) ~ Position.x + Position.y + Timepoint + WaterTreatment,  data = map) %>% 
+  .$aov.tab %>% 
+  broom::tidy() %>%
+  mutate(term = fct_recode(term,
+                           "PlotPosition_LeftRight" = "Position.x",
+                           "PlotPosition_TopBottom" = "Position.y"))
+  
+write.table(permanova, "../Tables/supp_table_permanova_16S.tsv", sep = "\t", quote = F, row.names = F)
+```
+
+Perform principal coordinates analysis
+```{r}
 #Perform PCoA
 bc.pcoa.axes <- pcoa_axes(bc.dist, map)
 bc.pcoa.eigval <- pcoa_eigval(bc.dist, map)

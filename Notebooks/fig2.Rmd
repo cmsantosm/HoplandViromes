@@ -2,7 +2,6 @@ Load libraries
 ```{r}
 library(RColorBrewer)
 library(cowplot)
-#library(ggridges)
 library(tidyverse)
 source("../General/general_functions.R")
 ```
@@ -83,7 +82,22 @@ sig.otus <- cor.estimate %>%
   mutate(Rank = rank(p.adj)) %>% 
   filter(Rank < 6) %>% 
   mutate(Rank2 = rank(Order)) %>% 
-  mutate(altID = paste("vOTU", LETTERS[Rank2])) 
+  mutate(altID = paste("vOTU ", LETTERS[Rank2])) 
+  #mutate(altID = paste("vOTU ", LETTERS[Rank2], "\n(r = ", signif(estimate, 2), ", P = ", signif(p.adj, 2), ")", sep = "")) 
+
+#Generate supplementary table
+supp.table <- cor.estimate %>%
+  ungroup() %>% 
+  filter(p.adj < 0.05) %>% 
+  left_join(select(sig.otus, OTU_ID, altID), by = "OTU_ID") %>% 
+  select(OTU_ID, altID, parameter, estimate, p.value, p.adj) %>% 
+  arrange(p.adj) %>% 
+  rename("vOTU_ID" = "OTU_ID",
+         "alternative_ID" = "altID",
+         "degrees_of_freedom" = "parameter",
+         "r" = "estimate")
+
+write.table(supp.table, "../Tables/supp_table_microdiv_stats.tsv", sep = "\t", quote = F, row.names = F)
 ```
 
 Panel C boxplots

@@ -10,7 +10,8 @@ Load data
 #Load map
 map <- readRDS("../Data/map.RDS") %>% 
   rename("SampleID" = "ViromeSampleID") %>% 
-  filter(SampleID != "V33") 
+  filter(SampleID != "V33") %>% 
+  mutate(Position.y = ifelse(Position.y > 0, 7.5 + 1.8, 0))
 
 #Load ANI data
 comp <- readRDS("../Data/instrain_compare.RDS")

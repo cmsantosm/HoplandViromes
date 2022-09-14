@@ -9,7 +9,8 @@ Load data
 #Load mapping file
 map <- readRDS("../Data/map.RDS") %>% 
   rename("SampleID" = "ViromeSampleID") %>% 
-  filter(SampleID != "V33") 
+  filter(SampleID != "V33") %>% 
+  mutate(Position.y = ifelse(Position.y > 0, 7.5 + 1.8, 0))
 
 #Load OTU table and remove singletons
 otu <- readRDS("../Data/votu_tmean75.RDS")
@@ -40,11 +41,24 @@ occupancy.df %>%
 saveRDS(occupancy.df, "../Data/votu_occupancy.RDS")
 ```
 
-Peform principal coordinates analysis
+Peform PERMANOVA
 ```{r}
 #Calculate BC dissimilarities
 bc.dist <- beta_div_dist(otu.norm)
 
+permanova <- vegan::adonis(as.dist(bc.dist) ~ Position.x + Position.y + Timepoint + WaterTreatment,  data = map) %>% 
+  .$aov.tab %>% 
+  broom::tidy() %>%
+  mutate(term = fct_recode(term,
+                           "PlotPosition_LeftRight" = "Position.x",
+                           "PlotPosition_TopBottom" = "Position.y"))
+  
+#Save supplementary table
+write.table(permanova, "../Tables/supp_table_permanova_votu.tsv", sep = "\t", quote = F, row.names = F)
+```
+
+Perform principal coordinates analysis
+```{r}
 #Perform PCoA
 bc.pcoa.axes <- pcoa_axes(bc.dist, map)
 bc.pcoa.eigval <- pcoa_eigval(bc.dist, map)
